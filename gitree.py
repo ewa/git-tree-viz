@@ -29,6 +29,8 @@ def main(args):
     REPO_PATH = os.path.expandvars('/$HOME/emulator/.git')
     COMPACT = True
     SHORT_UID_LEN=10
+    FORCE_TEMPORAL_ORDER=False
+    TEMPORAL_ORDER_EQUIV=60*60*24*7     # 1 week, in seconds
 
     repo = pygit2.Repository(REPO_PATH)
     refs_str = repo.listall_references()
@@ -159,6 +161,28 @@ def main(args):
     for e in A.edges_iter():
         #e.attr['len']=math.log(int(e.attr['ncommits']))+1
         e.attr['label']=e.attr['ncommits']
+
+
+    ## Add invisible order-forcing edges
+    if FORCE_TEMPORAL_ORDER:
+        node_date = []
+        for n in A.nodes_iter():
+            t = repo[n].commit_time
+            node_date.append((n,t))
+        node_date.sort(key=lambda x: x[1])
+        prev = None
+        for (node, date) in node_date:
+            if prev is None:
+                prev = (node, date)
+            else:
+                old_node, old_date = prev
+                #print time.ctime(old_date), time.ctime(date)
+                A.add_edge(old_node, node, style="invis")
+                ## Only update node relative to which order is forced if > TEMPORAL_ORDER_EQUIV time has passed
+                if (date - old_date) > TEMPORAL_ORDER_EQUIV:
+                    prev = (node, date)
+        
+    
     A.draw('foo.pdf', format='pdf', prog='dot')
     # print "HEAD: %s %s" % (head.hex, str(time.ctime(head.commit_time)))
     
