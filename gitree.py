@@ -26,7 +26,7 @@ import pprint
 import math
 import argparse
 import re
-
+import subprocess
 
 def eprint(*objs):
     print(*objs, end='\n', file=sys.stderr)
@@ -115,6 +115,20 @@ def parse(args):
             raise argparse.ArgumentTypeError(err_str)
         
 
+    #Very first thing we do, query dot for its supported output formats
+    fmts=None
+    fmt_info=" This script was unable to query Dot for its list of supported formats."
+    try:
+        dot = subprocess.Popen(['dot','-Txxx_no_way_this_format_exists'],
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        (out,err)=dot.communicate()         # Expect error
+        (junk,fmt_list)=err.split("Use one of:")
+        fmts=fmt_list.strip().split()
+        fmt_info=" Supported formats are {}".format(fmts)
+    except OSError, e:
+        pass            
+    except ValueError, e:
+        pass
     
     parser=argparse.ArgumentParser()
 
@@ -124,7 +138,7 @@ def parse(args):
                         help="Output file name, REQUIRED. '-' for stdout")
     
     out_opts.add_argument('-T',dest='format',
-                        help="Dot output format (default: guessed fromm outfile)")
+                        help="Dot output format (default: guessed from outfile)."+fmt_info)
     
     git_opts = parser.add_argument_group('Git options')
     dir_opts = git_opts.add_mutually_exclusive_group()
@@ -169,7 +183,14 @@ def parse(args):
             parser.error("No format (-T) supplied, and cannot guess from outfile '{}'".format(args.outfile.name))
         else:
             args.format = guess_fmt
-
+    # Check format
+    dot = subprocess.Popen(['dot','-T',args.format],
+                           stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    (out,err)=dot.communicate()         # Expect error
+    if dot.returncode != 0:
+        err_msg = "Dot doesn't like format '{}': {}".format(args.format,err)
+        parser.error(err_msg)
+    
     ## "Default" value of remotes is ['origin'], but "remotes" is an append option, so the default never gets replaced, only added to
     if args.remotes is None:
         args.remotes = ['origin']
