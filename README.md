@@ -20,8 +20,28 @@ where development split or merged.
   
 # Usage
 
-There's no command-line interface yet.  Options (including the
-location of the repository!) are hard-coded in the file at the
-beginning of main().
-
-
+    usage: gitree.py [-h] [-T FORMAT] [-p DIR | -r DIR] [-R R] [-c | -n]
+		     [--abbrev N] [-t [S]]
+		     outfile
+    
+    optional arguments:
+      -h, --help            show this help message and exit
+    
+    output arguments:
+      outfile               Output file name, REQUIRED. '-' for stdout
+      -T FORMAT             Dot output format (default: guessed fromm outfile)
+    
+    Git options:
+      -p DIR, --path DIR    Starting path to look for repository (default: '.')
+      -r DIR, --repo DIR    Exact path to Git repository
+      -R R, --remote R      Include branches from R. May be repeated. (default:
+			    origin)
+    
+    Graph options:
+      -c, --compact         Compact basic blocks (default)
+      -n, --no-compact      Do not compact basic blocks
+      --abbrev N            Abbreviate hashes to N characters (0 for no
+			    abbreviation). Default=8
+      -t [S], --temporal [S]
+			    Force temporal order for commits > S seconds apart
+			    (S=604800 if no argument)

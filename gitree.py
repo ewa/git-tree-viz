@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-# Copyright 2012 Eric Anderson
+# Copyright 2012, 2013 Eric Anderson
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -15,6 +15,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+from __future__ import print_function
 import sys
 import pygit2
 import time
@@ -23,37 +24,179 @@ import networkx as nx
 import pygraphviz as pgv
 import pprint
 import math
+import argparse
+import re
 
+
+def eprint(*objs):
+    print(*objs, end='\n', file=sys.stderr)
 
 def render_refs (reflist):
 
-    def subst_prefix(str, pmap):
-        for prefix in pmap.keys():
-            if str.startswith(prefix):
-                return pmap[prefix] + str[len(prefix):]
-        #fell through
-        return str
-            
+    local_re = re.compile('^refs/heads/([^/]+)')
+    remote_re = re.compile('^refs/remotes/([^/]+)/([^/]+)')
 
-    shorter = [subst_prefix(s,{'refs/heads/':'',
-                               'refs/remotes/origin/':'o-'}) for s in reflist]
-    return pprint.pformat(shorter)
+    local_names=set()
+    full_remotes=set()
+
+    for s in reflist:
+        l = local_re.match(s)
+        if l:            
+            ##eprint(s, "local", l.groups())
+            local_names.add(l.groups()[0])
+        r = remote_re.match(s)
+        if r:
+            ##eprint(s, "remote", r.groups())
+            full_remotes.add((r.groups()[0], r.groups()[1]))
+    # Remotes with heads matching the local name of this ref
+    matching_remotes = [r for (r,n) in full_remotes if n in local_names]
+    # String representation (remote/name) of remote heads not matching the local name
+    unmatch_remotes = ['{}/{}'.format(r,n) for (r,n) in full_remotes if n not in local_names]
+    
+    ##eprint(reflist, '=', local_names, matching_remotes, unmatch_remotes)
+    ## XXX Don't bother listing remotes which match the local info
+    labels=list(local_names)+unmatch_remotes
+    return ",".join(labels)
+
+            
                             
+
+def parse(args):
+    def GitableDir(path):
+
+        """
+
+        A directory in which you can do Git things -- i.e. a git
+        repository or a subdirectory of a checked_out repository.
+
+        Parameters:
+          path (string): A path name.  \"~\"-expansion will be performed.
+
+        Returns:
+          Tuple (supplied path name, absolute path name) upon success
+
+        Raises:
+          argparse.ArgumentTypeError if no Git repository is found
+        
+        """
+        
+        realpath=os.path.abspath(os.path.expanduser(path))
+        if not os.path.isdir(realpath):
+            err_str = "'{}' does not exist or is not a directory".format(path)
+            raise argparse.ArgumentTypeError(err_str)
+        try:
+            repo_path=pygit2.discover_repository(realpath)
+            return(path,repo_path)
+        except KeyError, e:
+            err_str = "No Git repo found in {} or its parent dirs".format(e.args[0])
+            raise argparse.ArgumentTypeError(err_str)
+
+    def ExactGitDir(path):
+        """        
+        The path of a Git repository. Searching from working
+        directories and subdirectories is _not_ performed.
+
+        Parameters:
+          path (string): A path name.  \"~\"-expansion will be performed.
+
+        Returns:
+          Tuple (supplied path name, absolute path name) upon success
+
+        Raises:
+          argparse.ArgumentTypeError if no Git repository is found        
+        """
+
+        realpath=os.path.abspath(os.path.expanduser(path))
+        try:
+            r = pygit2.Repository(realpath)
+            return (path, realpath)
+        except KeyError, e:
+            err_str = "No git repo found in {}".format(e.args[0])
+            raise argparse.ArgumentTypeError(err_str)
+        
+
+    
+    parser=argparse.ArgumentParser()
+
+
+    out_opts=parser.add_argument_group('output arguments')
+    out_opts.add_argument('outfile',type=argparse.FileType('w'),
+                        help="Output file name, REQUIRED. '-' for stdout")
+    
+    out_opts.add_argument('-T',dest='format',
+                        help="Dot output format (default: guessed fromm outfile)")
+    
+    git_opts = parser.add_argument_group('Git options')
+    dir_opts = git_opts.add_mutually_exclusive_group()
+    ## "--repo" and "--path" both provide the same information, but
+    ## use different handling/validation routines. Making them
+    ## mutually_exclusive AND giving them the same 'dest' has the
+    ## desired effect of ensuring that the DEFAULT "--path" doesn't
+    ## get validated if "--repo" is supplied.
+    
+    dir_opts.add_argument('-p','--path',dest='repo',type=GitableDir,
+                          default=".", metavar='DIR',
+                          help="Starting path to look for repository (default: '%(default)s')")
+    dir_opts.add_argument('-r','--repo',dest='repo',type=ExactGitDir,
+                        metavar='DIR', help="Exact path to Git repository")
+    git_opts.add_argument('-R','--remote', dest='remotes',action='append',
+                          metavar='R',
+                          help='Include branches from R.  May be repeated. (default: origin)')
     
 
+    graph_opts=parser.add_argument_group('Graph options')
+    
+    compact_opts=graph_opts.add_mutually_exclusive_group()
+    compact_opts.add_argument('-c','--compact',dest='compact',
+                              action='store_true',default=True,
+                              help="Compact basic blocks (default)")
+    compact_opts.add_argument('-n','--no-compact',dest='compact',
+                              action='store_false',
+                              help="Do not compact basic blocks")
+    graph_opts.add_argument('--abbrev',metavar="N",type=int, default=8,
+                        help="Abbreviate hashes to N characters (0 for no abbreviation).  Default=%(default)d")
+    graph_opts.add_argument('-t','--temporal',nargs='?', metavar='S',
+                        const=60*60*24*7,     # 1 week, in seconds
+                        help='Force temporal order for commits > S seconds apart (S=%(const)d if no argument)')
+
+
+    args=parser.parse_args()
+
+    ## Format is optional, unless it's not
+    if args.format is None:
+        guess_fmt=os.path.splitext(args.outfile.name)[-1].lower()[1:]
+        if guess_fmt == '':
+            parser.error("No format (-T) supplied, and cannot guess from outfile '{}'".format(args.outfile.name))
+        else:
+            args.format = guess_fmt
+
+    ## "Default" value of remotes is ['origin'], but "remotes" is an append option, so the default never gets replaced, only added to
+    if args.remotes is None:
+        args.remotes = ['origin']
+    return args
+
 def main(args):
-    REPO_PATH = os.path.expandvars('/$HOME/emulator/.git')
-    COMPACT = True
-    SHORT_UID_LEN=10
-    FORCE_TEMPORAL_ORDER=False
-    TEMPORAL_ORDER_EQUIV=60*60*24*7     # 1 week, in seconds
+    args = parse(args)
+    eprint(args)
+    
+    REPO_PATH = args.repo[1]
+    SHORT_UID_LEN=args.abbrev
+    if args.temporal is None:
+        FORCE_TEMPORAL_ORDER=False
+    else:
+        FORCE_TEMPORAL_ORDER=True
+        TEMPORAL_ORDER_EQUIV=args.temporal
 
     repo = pygit2.Repository(REPO_PATH)
     refs_str = repo.listall_references()
-    #print refs_str
-    heads_str = [r for r in refs_str if ("refs/heads/" in r or
-                                         "refs/remotes/origin/" in r)]
+    #eprint("all refs", refs_str)
+    ref_filter_str="^(refs/heads/)|"+("|".join(['(refs/remotes/'+re.escape(remote)+'/)' for remote in args.remotes]))
+    eprint(ref_filter_str)
+    ref_filter=re.compile(ref_filter_str)
+    heads_str = [r for r in refs_str if ref_filter.match(r)]
+    #eprint("heads of interest", heads_str)
     refs = [repo.lookup_reference(r) for r in heads_str]
+    #return -1
     
     ## Build graph
     G = nx.DiGraph()
@@ -61,10 +204,10 @@ def main(args):
     heads = []
     
     for r in refs:
-        print "Adding head: ", r.name
+        eprint("Adding head: ", r.name)
         ## First make sure all the vertices are there
         for commit in repo.walk(r.resolve().oid, pygit2.GIT_SORT_TIME):
-            #print "\t" + commit.hex
+            #eprint "\t" + commit.hex
             G.add_node(commit.hex)
         ## Then create edges
         for commit in repo.walk(r.resolve().oid, pygit2.GIT_SORT_TIME):
@@ -107,9 +250,9 @@ def main(args):
 
     # ## Annotate with reflog-specific edges
     # for r in refs:
-    #     print r.name
+    #     eprint r.name
     #     for entry in r.log():
-    #         print entry.message, entry.oid_old, entry.oid_new
+    #         eprint entry.message, entry.oid_old, entry.oid_new
     #         try:
     #             u = repo[entry.oid_old].hex
     #             v = repo[entry.oid_new].hex
@@ -121,18 +264,18 @@ def main(args):
     # B.draw('bar.pdf', format='pdf', prog='dot')
      
     ## Simplify!
-    if COMPACT:
+    if args.compact:
         ## XXX -- not sure why I'm not getting all basic blocks in 1st pass.  Need to think about this.
         needed_pruning = True
         passes = 0
         while (needed_pruning):
             passes = passes + 1
-            print "Contracting basic blocks: pass %d"%passes
+            eprint("Contracting basic blocks: pass %d"%passes)
             needed_pruning = False
             for n in G.nodes():
                 preds = G.predecessors(n)
                 succs = G.successors(n)
-                #print n, len(preds), len(succs)
+                #eprint n, len(preds), len(succs)
                 if (len(preds) == 1 and
                     len(succs) == 1 and
                     not 'root' in G.node[n] and
@@ -146,7 +289,7 @@ def main(args):
                     in_e = G.edge[predecessor][n]['ancestry']
                     out_e = G.edge[n][successor]['ancestry']
                     ## Include the number of commits of the edges and node being replaced
-                    #print in_e, out_e
+                    #eprint in_e, out_e
                     ncommits=in_e['ncommits']+out_e['ncommits']+1
                     G.add_edge(predecessor, successor, key='ancestry', ncommits=ncommits)
                     G.remove_node(n)        # Implies removing in_edges and out_edges
@@ -157,15 +300,20 @@ def main(args):
                         
                     needed_pruning = True
     
-    print "Rendering graph with Dot"
+    eprint("Rendering graph with Dot")
     A = nx.to_agraph(G)
     A.graph_attr['root']=most_rooty
     head_num = 0
     for n in A.nodes_iter():
-        n.attr['label']=n.name[0:SHORT_UID_LEN-1]
+        if SHORT_UID_LEN >0:            
+            n.attr['label']=n.name[0:SHORT_UID_LEN-1]
+        else:
+            n.attr['label']=n.name
         if n.attr['head']:
             head_num = head_num+1
             n.attr['label']=render_refs(G.node[n]['refs'])
+            if len(n.attr['label']) > 80:
+                eprint("Long label:", n.attr['label'], "length:", len(n.attr['label']))
             n.attr['shape']='box'
             n.attr['style']='bold,filled'
             n.attr['colorscheme']='set312'
@@ -192,15 +340,14 @@ def main(args):
                 prev = (node, date)
             else:
                 old_node, old_date = prev
-                #print time.ctime(old_date), time.ctime(date)
+                #eprint time.ctime(old_date), time.ctime(date)
                 A.add_edge(old_node, node, style="invis")
                 ## Only update node relative to which order is forced if > TEMPORAL_ORDER_EQUIV time has passed
                 if (date - old_date) > TEMPORAL_ORDER_EQUIV:
                     prev = (node, date)
         
-    
-    A.draw('foo.pdf', format='pdf', prog='dot')
-    # print "HEAD: %s %s" % (head.hex, str(time.ctime(head.commit_time)))
+    A.draw(args.outfile, args.format, prog='dot')
+    # eprint "HEAD: %s %s" % (head.hex, str(time.ctime(head.commit_time)))
     
 
 if __name__ == '__main__':
